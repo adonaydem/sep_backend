@@ -10,6 +10,18 @@ import uuid
 from elevenlabs.client import ElevenLabs
 from elevenlabs import play, VoiceSettings
 from dotenv import load_dotenv
+
+from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import FunctionMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.utils.function_calling import convert_to_openai_function
+import json
+from langchain_mongodb.chat_message_histories import MongoDBChatMessageHistory
+import random
+from langchain_postgres import PostgresChatMessageHistory
+import psycopg
+import uuid
+
 load_dotenv()
 app = Flask(__name__)
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -18,6 +30,11 @@ llm = ChatOpenAI(
     temperature=0,
 )
 
+sync_connection = psycopg.connect(
+    os.getenv("POSTGRES_SUPABASE"),
+    prepare_threshold=None,
+)
+name_space = uuid.NAMESPACE_URL
 client = ElevenLabs(
   api_key=os.getenv("ELEVENLABS_API_KEY"),
 )
@@ -95,14 +112,7 @@ def transcribe_audio():
         except OSError:
             pass
 
-from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import FunctionMessage, HumanMessage, AIMessage, SystemMessage
-from langchain_core.utils.function_calling import convert_to_openai_function
-import json
-from langchain_mongodb.chat_message_histories import MongoDBChatMessageHistory
-import random
+
 def supervisor(inp, cache, sid):
     try:
         cache = {k: v for k, v in cache.items() if v not in [None, ""]} 
@@ -224,22 +234,36 @@ def llm_run(text, cache, session_id):
         print("!!!!!!!!!cache is None")
         cache = {}
     model, prompt, new_sid = supervisor(text, cache, session_id)
-    history = MongoDBChatMessageHistory(
-        connection_string="mongodb://localhost:27017",  # your MongoDB URI
-        session_id=new_sid,                # unique per user/conversation
-        database_name="chat_db",                       # optional; defaults to "chat_history"
-        collection_name="messages"                     # optional; defaults to "message_store"
+    # history = MongoDBChatMessageHistory(
+    #     connection_string="mongodb://localhost:27017",  # your MongoDB URI
+    #     session_id=new_sid,                # unique per user/conversation
+    #     database_name="chat_db",                       # optional; defaults to "chat_history"
+    #     collection_name="messages"                     # optional; defaults to "message_store"
+    # )
+    sync_connection.autocommit = True
+    session_uuid = str(uuid.uuid5(name_space, new_sid))
+    history = PostgresChatMessageHistory(  # your MongoDB URI
+        "home_chat_history",
+        session_uuid,     
+        sync_connection=sync_connection
     )
-    
-    messages = history.messages  
-    print(messages)
-    if len(messages) > 5:
-        messages = messages[-5:]
-    response_text = model.invoke(messages + [SystemMessage(content=prompt), HumanMessage(content=text)])
-    history.add_user_message(text)
-    history.add_ai_message(response_text.content)
-    print("response: ",response_text.content, type(response_text.content))
+    try:
 
+        messages = history.messages  
+        print(messages)
+        if len(messages) > 5:
+            messages = messages[-5:]
+        response_text = model.invoke(messages + [SystemMessage(content=prompt), HumanMessage(content=text)])
+        history.add_messages(
+            [
+            HumanMessage(content=text),
+            response_text
+            ]
+        )
+        print("response: ",response_text.content, type(response_text.content))
+    except Exception as e:
+        sync_connection.rollback()     # abandon the failed transaction
+        raise 
     return response_text.content
 
 
