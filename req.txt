@@ -16,4 +16,5 @@ gevent==24.2.1
 openai==1.75.0
 elevenlabs==1.57.0
 SpeechRecognition==3.14.2
-psycopg
+psycopg[binary]
+langchain_postgres
