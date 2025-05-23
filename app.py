@@ -3,7 +3,7 @@ import tempfile
 
 from flask import Flask, request, jsonify, send_file
 import openai
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAI
 import speech_recognition as sr
 import os
 import uuid
@@ -21,12 +21,27 @@ import random
 from langchain_postgres import PostgresChatMessageHistory
 import psycopg
 import uuid
+from langchain.chains.transform import TransformChain
+from langchain.prompts import PromptTemplate
+from ocr import run_ocr
+import logging
 
+import torch
+from PIL import Image
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from torchvision import models, transforms
+import os
+import scenedescription
+logging.basicConfig(
+    level=logging.INFO,  # Change to DEBUG for verbose logs
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 load_dotenv()
 app = Flask(__name__)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 llm = ChatOpenAI(
-    model="gpt-4o-mini",
+    model="gpt-4.1-mini",
     temperature=0,
 )
 
@@ -39,6 +54,12 @@ client = ElevenLabs(
   api_key=os.getenv("ELEVENLABS_API_KEY"),
 )
 r = sr.Recognizer()
+
+blip_processor, blip_model, places_model, places_classes = scenedescription.load_models()
+logger.info("SD models loaded")
+
+UPLOAD_FOLDER = 'temp_uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 @app.route('/transcribe', methods=['POST'])
 def transcribe_audio():
     # 1. Get the uploaded file
@@ -46,18 +67,18 @@ def transcribe_audio():
         return jsonify({"error": "No audio file provided."}), 400
     audio_file = request.files['audio']
     sid = request.form.get('uid')
-    print("TTESING: ", request.form.get('recognitionsCache'))
+    logger.debug("TTESING: %s", request.form.get('recognitionsCache'))
     if isinstance(request.form.get('recognitionsCache'), str):
         cache = json.loads(request.form.get('recognitionsCache'))
     else:
         cache = request.form.get('recognitionsCache')
 
-    print("!!!!!!!!cache: ",cache, "sid", sid)
+    logger.debug("!!!!!!!!cache: %s sid %s", cache, sid)
     # 2. Save to a temp file so Whisper can read it
     with tempfile.NamedTemporaryFile(suffix=os.path.splitext(audio_file.filename)[1], delete=False) as tmp:
         audio_file.save(tmp.name)
         tmp_path = tmp.name
-
+    logger.debug("Audio file saved to: %s", tmp_path)
     try:
         # Transcript
         with sr.AudioFile(tmp_path) as source:
@@ -67,11 +88,10 @@ def transcribe_audio():
             audio,
             model="whisper-1"
         )
-        print("____________recognized text: ", text)
+        logger.debug("____________recognized text: %s", text)
 
         #Response
-        text_to_speak = llm_run(text, cache,sid)
-
+        text_to_speak = llm_run(text, cache, sid)
 
         #TTS
         response = client.text_to_speech.convert(
@@ -94,7 +114,7 @@ def transcribe_audio():
                 if chunk:
                     f.write(chunk)
         
-        print(f"{save_file_path}: A new audio file was saved successfully!")
+        logger.debug("%s: A new audio file was saved successfully!", save_file_path)
         return send_file(
             save_file_path,
             mimetype="audio/mpeg",
@@ -102,7 +122,7 @@ def transcribe_audio():
         )
 
     except Exception as e:
-        print({"error": str(e)})
+        logger.debug("Error: %s", str(e), exc_info=True)
         return jsonify({"error": str(e)}), 500
 
     finally:
@@ -113,11 +133,11 @@ def transcribe_audio():
             pass
 
 
-def supervisor(inp, cache, sid):
+def supervisor(inp, cache):
     try:
         cache = {k: v for k, v in cache.items() if v not in [None, ""]} 
         sup_messages = [HumanMessage(content=inp)]
-        parent_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5)
+        parent_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.5)
         toolkit = {member: [] for member in ["Computer_Vision", "General"]}
         members = ["Computer_Vision", "No_Match"]
         cache_key_json = json.dumps([k for k,_ in cache.items()]).replace("{", "{{").replace("}", "}}")
@@ -171,14 +191,14 @@ def supervisor(inp, cache, sid):
         sup_messages.append(AIMessage(content=str(response)))
         next_app = response['next']
         print("_________?????????????next app: ", next_app)
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.5, streaming=True)
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.5, streaming=True)
         functions = [convert_to_openai_function(t) for t in toolkit['General']]
 
         if len(next_app) == 0 or next_app == "No_Match":
             if len(functions) > 0:
                 llm = llm.bind_functions(functions)
             # sid = sid + "_" + "No_Match"
-            return llm, "", sid
+            return llm, ""
         print("Cache", cache)
         # Bind tools to the model
         functions.extend([convert_to_openai_function(t) for t in toolkit[next_app]])
@@ -224,7 +244,7 @@ def supervisor(inp, cache, sid):
     except Exception as e:
         print("Error: ", str(e))
         raise e
-    return llm, wanted_prompt, sid 
+    return llm, wanted_prompt
 
 def llm_run(text, cache, session_id):
     if session_id is None:
@@ -232,16 +252,30 @@ def llm_run(text, cache, session_id):
         session_id = random.randint(0, 100000)
     if cache is None:
         print("!!!!!!!!!cache is None")
-        cache = {}
-    model, prompt, new_sid = supervisor(text, cache, session_id)
-    # history = MongoDBChatMessageHistory(
-    #     connection_string="mongodb://localhost:27017",  # your MongoDB URI
-    #     session_id=new_sid,                # unique per user/conversation
-    #     database_name="chat_db",                       # optional; defaults to "chat_history"
-    #     collection_name="messages"                     # optional; defaults to "message_store"
-    # )
+        cache = []
+    # llm, wanted_prompt  = supervisor(text,cache)
+    print("!!!!!!!!!cache: ", cache)
+    if len(cache) == 0:
+        cache = []
+    else: 
+        cache = cache[-7:]
+    
+   
+    prompt = f"""
+        You are Visex – an expert visual assistant with human-level understanding of images. You will recieve metadata and You will act as if you “see” what’s in front of you and describe it naturally, vividly, and concisely, as if you were speaking to someone who can’t see. You MUST never mention technical metadata (e.g. “JSON,” “classes,” “confidence scores,” etc.). Instead, you speak in plain, engaging language.
+        Task 1: Object_Detection  
+             Imagine you’re seeing through a camera: list only the most recent (i.e. based on timestamp) objects and, among those, emphasize on the ones with high confidence score(don't talk about scores explicitly though).  
+             Keep it concise—no more than 4–6 items. Use two sentences only. You should list items in first sentence, then describe consicely the inituition behind these objects.
+             No scene related information or tone should be given, as this is about individual items and their metadata.
+             If no data is given say “I’m sorry, I can’t interpret what I see at the moment.”
+        Input JSON data: 
+            {json.dumps(cache, indent=4)}
+    """
+    
+
     sync_connection.autocommit = True
-    session_uuid = str(uuid.uuid5(name_space, new_sid))
+    logger.debug("TTESING sid: %s (%s)", session_id, type(session_id))
+    session_uuid = str(uuid.uuid5(name_space, str(session_id)))
     history = PostgresChatMessageHistory(  # your MongoDB URI
         "home_chat_history",
         session_uuid,     
@@ -253,7 +287,7 @@ def llm_run(text, cache, session_id):
         print(messages)
         if len(messages) > 5:
             messages = messages[-5:]
-        response_text = model.invoke(messages + [SystemMessage(content=prompt), HumanMessage(content=text)])
+        response_text = llm.invoke(messages + [SystemMessage(content=prompt), HumanMessage(content=text)])
         history.add_messages(
             [
             HumanMessage(content=text),
@@ -263,7 +297,7 @@ def llm_run(text, cache, session_id):
         print("response: ",response_text.content, type(response_text.content))
     except Exception as e:
         sync_connection.rollback()     # abandon the failed transaction
-        raise 
+        raise e
     return response_text.content
 
 
@@ -278,9 +312,109 @@ def chat_test():
         cache = request_data['cache']
     response_text = llm_run(text, cache, sid)
     return jsonify(response_text)
+
+@app.route('/refine_ocr', methods=['POST'])
+def refine_ocr():
+    text = request.form.get('text')
+    if text.strip() == "":
+        ""
     
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are an expert OCR Output corrector. You are proficient in both Arabic and English languages. Possible input languages are English, Arabic or Both at the same time. You are required to correct the output to the point that the block makes sense. 
+                   In addition, the current OCR has no spatial awareness so you are required to correct the output to the point that the block makes sense. For example, Two columns in an image will get attached and be seen as one. Therefore, you need to analyze the whole text structure and try to grasp its message.
+                    Input: raw OCR output containing Latin, Arabic, and possible garbled symbols.
+                    Output: clean Text Output only—no notes or commentary.
+                    
+                    Example 1:
+                    Input: "thttps://examplé.com\nنص م***:*خرب"
+                    Output: "https://examplé.com\nنص مخرب"
 
+                    Example 2:
+                    Input: "he followingg link: !http://test.org\nالنص 123## مترجم"
+                    Output: "The following link: http://test.org\nالنص مترجم"
+                    
+                    """,
+            ),
+            ("human", "{text}"),
+        ]
+    )
 
+    chain = prompt | llm
+    print("Text Refine input: ", text)
+    response_text = chain.invoke({"text": text})
+    print("REFINE OUTPUT: ", response_text)
+    return response_text.content
+
+@app.route('/ocr', methods=['POST'])
+def ocr():
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image file sent'}), 400
+
+    file = request.files['image']
+    filename = f"{uuid.uuid4().hex}.png"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(filepath)
+
+    text = run_ocr(filepath)
+    print("SENDING TO flutter:", text)
+    return jsonify({'extracted_text': text})
+
+@app.route('/sd', methods=['POST'])
+def sd():
+    try:
+        if 'image' not in request.files:
+            return jsonify({'error': 'No image file sent'}), 400
+
+        file = request.files['image']
+        filename = f"{uuid.uuid4().hex}.png"
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+
+        scene_catagory, scene_attribute = scenedescription.enhanced_describe(filepath, blip_processor, blip_model, places_model, places_classes)
+        
+
+        if scene_catagory.strip() == "" and scene_attribute == "":
+            return ""
+        
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """You are an expert Image Caption Writer for a visually impaired person. Given a minimal input—scene category and scene attribute—write a natural, descriptive caption as if you are looking directly at the image. Use everyday, simple language to bring the scene to life. Avoid adding details not provided. Write no more than three sentences. Use tentative language such as “it looks like,” “it seems,” “it is as if,” or similar phrases to express some uncertainty or doubt about what you see.
+                        Input: raw scene description with minimal details.
+                        Output: clean Text Description Output only—no notes or commentary.
+                        
+                        Example 1:
+                        Scene Category: "athletic_field/outdoor."
+                        Scene Attribute: " a basketball court"
+                        Output: "It seems you are standing near an outdoor basketball court on an athletic field. The court looks like it has clear lines marking the playing area, with a hoop standing at one end. It is as if the space is ready for a game on a bright day."
+
+                        Example 2:
+                        Scene Category: "car_interior"
+                        Scene Attribute: "  the interior of the 2019 bmw e - tr"
+                        Output: "It looks like you are inside the cabin of a 2019 BMW iE electric car. The dashboard seems sleek and modern, with a large digital display in front of the driver’s seat. The seats and controls give an impression of comfort and high-tech design."
+                        
+                        """,
+                ),
+                ("human", """
+
+                Scene Category: "{scene_category}"
+                Scene Attribute: "{scene_attribute}"
+                """),
+            ]
+        )
+
+        chain = prompt | llm
+        print("Text Refine input: ", scene_attribute+scene_catagory)
+        response_text = chain.invoke({"scene_category": scene_catagory, "scene_attribute": scene_attribute})
+        print("REFINE OUTPUT: ", response_text)
+        return jsonify({"text":response_text.content})
+    except Exception as e:
+        logger.error("An error occurred: %s", str(e))
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
