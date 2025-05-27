@@ -3,7 +3,7 @@ from PIL import Image
 from transformers import BlipProcessor, BlipForConditionalGeneration
 from torchvision import models, transforms
 import os
-
+from langchain_core.prompts import ChatPromptTemplate
 # Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -76,7 +76,7 @@ def get_places_prediction(image, model, classes):
         return "unknown location"
 
 # 3. Main description function with comprehensive error handling
-def enhanced_describe(image_path, blip_processor, blip_model, places_model, places_classes):
+def enhanced_describe(image_path, blip_processor, blip_model, places_model, places_classes, llm):
     try:
         # Convert to absolute path
         abs_image_path = os.path.join(SCRIPT_DIR, image_path)
@@ -115,17 +115,52 @@ def enhanced_describe(image_path, blip_processor, blip_model, places_model, plac
         # Places365 prediction
         place_context = get_places_prediction(image, places_model, places_classes)
 
-        # Combine results
-        if place_context.lower() == "unknown location":
-            return blip_desc, ""
-        if place_context.lower() in blip_desc.lower():
-            return blip_desc, ""
-        return place_context, blip_desc
+        
+        
+        refined_output = refine_sd(place_context, blip_desc,llm)
+        return refined_output
 
     except Exception as e:
         print(f"Error in scene description: {e}")
         return "Could not generate description"
 
+def refine_sd(scene_catagory, scene_attribute,llm):
+    if scene_catagory.strip() == "" and scene_attribute == "":
+            return ""
+    
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are an expert Image Caption Writer for a visually impaired person. Given a minimal input—scene category and scene attribute—write a natural, descriptive caption as if you are looking directly at the image. Use everyday, simple language to bring the scene to life. Avoid adding details not provided. Write no more two  sentences. Use tentative language such as “it looks like,” “it seems,” “it is as if,” or similar phrases to express some uncertainty or doubt about what you see.
+                    Input: raw scene description with minimal details.
+                    Output: clean Text Description Output only—no notes or commentary.
+                    
+                    Example 1:
+                    Scene Category: "athletic_field/outdoor."
+                    Scene Attribute: " a basketball court"
+                    Output: "It seems you are standing near an outdoor basketball court on an athletic field. The court looks like it has clear lines marking the playing area, with a hoop standing at one end. It is as if the space is ready for a game on a bright day."
+
+                    Example 2:
+                    Scene Category: "car_interior"
+                    Scene Attribute: "  the interior of the 2019 bmw e - tr"
+                    Output: "It looks like you are inside the cabin of a 2019 BMW iE electric car. The dashboard seems sleek and modern, with a large digital display in front of the driver’s seat. The seats and controls give an impression of comfort and high-tech design."
+                    
+                    """,
+            ),
+            ("human", """
+
+            Scene Category: "{scene_category}"
+            Scene Attribute: "{scene_attribute}"
+            """),
+        ]
+    )
+
+    chain = prompt | llm
+    print("Text Refine input: ", scene_attribute+scene_catagory)
+    response_text = chain.invoke({"scene_category": scene_catagory, "scene_attribute": scene_attribute})
+    print("REFINE OUTPUT: ", response_text)
+    return response_text
 # 4. Main execution with proper error handling
 if __name__ == "__main__":
     try:
