@@ -1,15 +1,16 @@
-# 1. Choose Python base image
 FROM python:3.11.4-slim
 
-# 2. Set working directory
-WORKDIR /app
+# Install system libs needed by OpenCV (for libGL.so.1)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libgl1 \
+      libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
 
-# 3. Copy requirements and install
+WORKDIR /app
 COPY req.txt .
 RUN pip install --no-cache-dir -r req.txt
 
-# 4. Copy the rest of your code
 COPY . .
 
-# 5. Run the app
 CMD ["python", "app.py"]
