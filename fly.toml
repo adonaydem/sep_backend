@@ -1,12 +1,13 @@
-# fly.toml app configuration file generated for sep-backend-8er6ww on 2025-05-27T14:33:48Z
+# fly.toml app configuration file generated for sep-backend-8er6ww-ancient-meadow-3445 on 2025-05-27T19:06:39+04:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'sep-backend-8er6ww'
+app = 'sep-backend-8er6ww-ancient-meadow-3445'
 primary_region = 'bom'
 
 [build]
+  dockerfile = './Dockerfile'
 
 [http_service]
   internal_port = 8080
@@ -17,7 +18,4 @@ primary_region = 'bom'
   processes = ['app']
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 256
+  size = 'shared-cpu-1x'

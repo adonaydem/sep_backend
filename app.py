@@ -325,4 +325,6 @@ def search_messages():
     return jsonify(results), 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get("PORT", 8080))
+    # bind to 0.0.0.0 so Fly’s proxy can reach you
+    app.run(host="0.0.0.0", port=port)

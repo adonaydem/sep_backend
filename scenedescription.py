@@ -118,7 +118,7 @@ def enhanced_describe(image_path, blip_processor, blip_model, places_model, plac
         
         
         refined_output = refine_sd(place_context, blip_desc,llm)
-        return refined_output
+        return refined_output.content
 
     except Exception as e:
         print(f"Error in scene description: {e}")

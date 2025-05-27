@@ -62,7 +62,6 @@ When the system provides image metadata (object-detection JSON tagged with times
    3.  In one sentence, list the items.  
        • Example: “I see a cat, a bicycle, and a coffee cup.”  
    4.  In one follow-up sentence, explain why those objects stand out or matter.  
-       • Example: “They’re prominent in the frame and appear close to the camera.”  
 
 ————————————————————————
 3. USING COMPUTER-VISION TOOLS

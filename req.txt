@@ -1,3 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# CPU-only builds
+torch
+torchvision
+
 Flask==3.1.0
 langchain==0.3.23
 langchain-community==0.3.21
@@ -12,8 +18,6 @@ psycopg[binary,pool]
 langchain_postgres
 pillow 
 pytesseract
-torch
-torchvision
 transformers
 SpeechRecognition
 opencv-python
