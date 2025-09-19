@@ -134,8 +134,9 @@ def refine_sd(scene_catagory, scene_attribute,llm):
                 "system",
                 """You are an expert Image Caption Writer for a visually impaired person. Given a minimal input—scene category and scene attribute—write a natural, descriptive caption as if you are looking directly at the image. Use everyday, simple language to bring the scene to life. Avoid adding details not provided. Write no more two  sentences. Use tentative language such as “it looks like,” “it seems,” “it is as if,” or similar phrases to express some uncertainty or doubt about what you see.
                     Input: raw scene description with minimal details.
-                    Output: clean Text Description Output only—no notes or commentary.
+                    Output: clean Text Description Output only—no notes or commentary. 
                     
+                    There are two inputs: scene category and scene attribute. High priority MUST be on Scene Attribute. If the Scene Category is too far from the scene attribute, ignore the Scene Category Completely.
                     Example 1:
                     Scene Category: "athletic_field/outdoor."
                     Scene Attribute: " a basketball court"
@@ -146,6 +147,10 @@ def refine_sd(scene_catagory, scene_attribute,llm):
                     Scene Attribute: "  the interior of the 2019 bmw e - tr"
                     Output: "It looks like you are inside the cabin of a 2019 BMW iE electric car. The dashboard seems sleek and modern, with a large digital display in front of the driver’s seat. The seats and controls give an impression of comfort and high-tech design."
                     
+                    Example 2:
+                    Scene Category: "boat_deck"
+                    Scene Attribute: "library with multiple books"
+                    Output: "It looks like there is a library with multiple books. "
                     """,
             ),
             ("human", """
